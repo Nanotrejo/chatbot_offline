@@ -1,0 +1,46 @@
+version: "3.8"
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  pull-model:
+    image: alpine:latest
+    container_name: pull_model
+    depends_on:
+      - ollama
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        apk add --no-cache curl && \
+        echo 'Esperando a que Ollama esté disponible...' && \
+        until curl -s http://ollama:11434/api/tags > /dev/null; do sleep 2; done && \
+        echo 'Descargando modelo llama3...' && \
+        curl -X POST http://ollama:11434/api/pull \
+             -H "Content-Type: application/json" \
+             -d '{"name": "llama3"}'
+    volumes:
+      - ollama_data:/root/.ollama
+
+  api:
+    build: .
+    container_name: api_service
+    command: ["python", "main.py"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      - pull-model
+    volumes:
+      - ./documents:/app/documents
+      - ./chroma_db:/app/chroma_db
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OLLAMA_BASE_URL=http://ollama:11434
+
+volumes:
+  ollama_data:
