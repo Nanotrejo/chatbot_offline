@@ -19,13 +19,12 @@ DB_PATH = "./chroma_db"
 DATA_DIR = "documents/"
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 LLM_MODEL = "llama3" # Modelo de Ollama que instalaste
-KWARGS = {'k': 3} # Número de fragmentos relevantes a recuperar
+KWARGS = {'k': 10} # Número de fragmentos relevantes a recuperar
 TEMPERATURE = 0.1 # Temperatura para respuestas más precisas
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # --- INGESTA AUTOMÁTICA ---
 def ensure_vector_db():
-    if not os.path.exists(DB_PATH) or not os.listdir(DB_PATH):
         print("No existe la base de datos vectorial, creando...")
         # Eliminar la carpeta si existe (por si está corrupta o vacía)
         if os.path.exists(DB_PATH):
@@ -78,8 +77,6 @@ def ensure_vector_db():
             persist_directory=DB_PATH
         )
         print("✅ ¡Proceso completado! La base de datos vectorial está lista para ser usada.")
-    else:
-        print("La base de datos vectorial ya existe.")
 
 # Ejecutar la ingesta automática antes de inicializar la API
 ensure_vector_db()
@@ -121,10 +118,14 @@ llm = ChatOllama(model=LLM_MODEL, temperature=TEMPERATURE, base_url=OLLAMA_BASE_
 # Definición del Prompt (Plantilla de instrucciones para el LLM)
 # ESTA ES LA PARTE CLAVE PARA CONTROLAR LA RESPUESTA
 prompt_template = """
-Eres un asistente experto que responde preguntas sobre un manual de aplicación.
-Utiliza únicamente el siguiente CONTEXTO para responder la PREGUNTA del usuario.
-Tu respuesta debe ser BREVE, DIRECTA y precisa.
-Si la información no está en el contexto, responde amablemente: "Lo siento, no tengo información sobre eso en el manual."
+Eres un asistente experto en un manual de aplicación.
+
+Responde la PREGUNTA del usuario usando **exclusivamente** el CONTEXTO proporcionado.
+Tu respuesta debe ser **breve, directa y precisa**, y siempre en el **idioma de la pregunta**.
+Incluye en la respuesta el **nombre del documento**, **número de página** y **subíndice** donde se encontró la información.
+**No** digas frases como "según el manual" ni variantes similares.
+Si la respuesta **no está en el CONTEXTO**, responde exactamente:
+**"Lo siento, no tengo información sobre eso en el manual."**
 
 CONTEXTO:
 {context}
