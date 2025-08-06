@@ -3,17 +3,19 @@
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
-from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_chroma import Chroma
-from langchain_community.chat_models import ChatOllama
+# from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama  # Importación actualizada
 from langchain.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 import os
 import shutil
-from langchain.document_loaders import PyPDFLoader
+# from langchain.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_huggingface import HuggingFaceEmbeddings
 from typing import Optional
 import uuid
 
@@ -21,7 +23,10 @@ import uuid
 DB_PATH = "chroma_db/"
 DATA_DIR = "documents/"
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-LLM_MODEL = "llama3"  # Modelo de Ollama que instalaste
+# LLM_MODEL = "llama3"  # Modelo de Ollama que instalaste
+# LLM_MODEL = "gpt-oss:20b"
+LLM_MODEL = "gemma3:1b"
+# LLM_MODEL = "phi3:mini"
 KWARGS = {"k": 3}  # Número de fragmentos relevantes a recuperar
 TEMPERATURE = 0.1  # Temperatura para respuestas más precisas
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -35,7 +40,7 @@ def ensure_vector_db():
         shutil.rmtree(DB_PATH)
     # 1. Cargar el modelo de embeddings
     print(f"Cargando modelo de embeddings: {EMBEDDING_MODEL}...")
-    embeddings = SentenceTransformerEmbeddings(
+    embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL, model_kwargs={"device": "cpu"}
     )
     print("✅ Modelo de embeddings cargado.")
@@ -106,7 +111,7 @@ app.add_middleware(
 
 # Carga el modelo de embeddings (debe ser el mismo que en ingest.py)
 print("Cargando modelo de embeddings...")
-embeddings = SentenceTransformerEmbeddings(
+embeddings = HuggingFaceEmbeddings(
     model_name=EMBEDDING_MODEL, model_kwargs={"device": "cpu"}
 )
 print("✅ Modelo de embeddings cargado.")
@@ -123,7 +128,6 @@ print("✅ Base de datos vectorial cargada y lista.")
 
 # Carga el modelo de lenguaje (LLM) desde Ollama
 llm = ChatOllama(model=LLM_MODEL, temperature=TEMPERATURE, base_url=OLLAMA_BASE_URL)
-# llm = ChatOllama(model=LLM_MODEL, temperature=TEMPERATURE)
 
 # Definición del Prompt (Plantilla de instrucciones para el LLM)
 # ESTA ES LA PARTE CLAVE PARA CONTROLAR LA RESPUESTA
@@ -173,6 +177,7 @@ class ChatRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
     language: Optional[str] = "es"
+    model: Optional[str] = None  # Permite especificar el modelo
 
 
 # --- HISTORIAL DE SESIONES EN MEMORIA ---
@@ -181,21 +186,15 @@ session_histories = {}
 
 @app.post("/chat", summary="Endpoint principal del chatbot")
 def chat(request: ChatRequest):
-    """
-    Recibe una pregunta del usuario, busca en el manual y devuelve una respuesta generada por el LLM.
-    """
     session_id = request.session_id or str(uuid.uuid4())
     language = request.language or "es"
-    # Recupera historial o inicializa
+    model_name = request.model or LLM_MODEL  # Usa el modelo por defecto si no se especifica
     history = session_histories.get(session_id, [])
-    # Construye contexto de historial
     history_context = "\n".join([
         f"Usuario: {q}\nBot: {a}" for q, a in history
     ])
-    # Modifica la pregunta para incluir historial
     pregunta_con_historial = f"{history_context}\nUsuario: {request.question}" if history_context else request.question
-    print(f"Pregunta recibida: {request.question} (session_id={session_id}, language={language})")
-    # Prompt dinámico según idioma
+    print(f"Pregunta recibida: {request.question} (session_id={session_id}, language={language}, model={model_name})")
     prompt_template = f"""
     Eres un asistente experto en un manual técnico.
 
@@ -219,15 +218,15 @@ def chat(request: ChatRequest):
     RESPUESTA CONCISA EN {language}:
     """
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+    llm_local = ChatOllama(model=model_name, temperature=TEMPERATURE, base_url=OLLAMA_BASE_URL)
     rag_chain_local = (
         {"context": retriever | format_docs, "question": RunnablePassthrough()}
         | prompt
-        | llm
+        | llm_local
         | StrOutputParser()
     )
     response = rag_chain_local.invoke(pregunta_con_historial)
     print(f"Respuesta generada: {response}")
-    # Guarda en historial
     history.append((request.question, response))
     session_histories[session_id] = history
     return {"answer": response, "session_id": session_id}
