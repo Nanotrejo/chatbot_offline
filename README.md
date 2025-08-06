@@ -1,4 +1,4 @@
-# 🤖 Chatbot Offline - Manual Rosita
+# 🤖 Chatbot Offline
 
 Este proyecto es una API basada en FastAPI que permite consultar manuales técnicos usando modelos LLM locales vía Ollama y búsqueda semántica con ChromaDB.
 
