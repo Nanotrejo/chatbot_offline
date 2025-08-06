@@ -8,10 +8,8 @@ import os
 import shutil
 
 # --- CONSTANTES ---
-# PDF_PATH = "ManSW_ROSITA_2.0.8.1.pdf"  # Eliminado, ya no se usa una sola ruta
 DATA_DIR = "documents/"  # Directory to search for PDF and TXT files
 DB_PATH = "./chroma_db"
-# Modelo de embedding multilingüe y de alto rendimiento
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2" 
 
 def main():
