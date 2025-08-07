@@ -3,7 +3,7 @@
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 import os
 import shutil
 
@@ -27,7 +27,7 @@ def main():
     # Este modelo convierte el texto en vectores numéricos para la búsqueda semántica.
     print(f"Cargando modelo de embeddings: {EMBEDDING_MODEL}...")
     # Usamos 'cpu' explícitamente para asegurar la compatibilidad si no hay GPU
-    embeddings = SentenceTransformerEmbeddings(
+    embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={'device': 'cpu'}
     )

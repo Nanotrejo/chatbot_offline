@@ -8,3 +8,4 @@ ollama
 pypdf
 sentence-transformers
 langchain-ollama
+langchain-huggingface

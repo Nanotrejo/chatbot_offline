@@ -4,31 +4,34 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 from langchain_chroma import Chroma
-# from langchain_community.chat_models import ChatOllama
 from langchain_ollama import ChatOllama  # Importación actualizada
 from langchain.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.documents import Document
 import os
 import shutil
-# from langchain.document_loaders import PyPDFLoader
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_huggingface import HuggingFaceEmbeddings
 from typing import Optional
 import uuid
+import json
+import re
 
 # --- CONSTANTES ---
 DB_PATH = "chroma_db/"
 DATA_DIR = "documents/"
-EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+# EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+# EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-mpnet-base-v2"
 # LLM_MODEL = "llama3"  # Modelo de Ollama que instalaste
 # LLM_MODEL = "gpt-oss:20b"
-LLM_MODEL = "gemma3:1b"
-# LLM_MODEL = "phi3:mini"
-KWARGS = {"k": 3}  # Número de fragmentos relevantes a recuperar
-TEMPERATURE = 0.1  # Temperatura para respuestas más precisas
+# LLM_MODEL = "gemma3:4b"
+LLM_MODEL = "phi3:mini"
+KWARGS = {"k": 15}  # Número de fragmentos relevantes a recuperar
+TEMPERATURE = 0.2  # Temperatura para respuestas más precisas
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 
@@ -58,13 +61,20 @@ def ensure_vector_db():
     for file in files:
         print(f"Cargando documento desde: {file}...")
         file_path = os.path.join(DATA_DIR, file)
+        docs = []
         if file.lower().endswith(".pdf"):
             loader = PyPDFLoader(file_path)
             docs = loader.load()
         elif file.lower().endswith(".txt"):
-            with open(file_path, "r", encoding="utf-8") as f:
-                text = f.read()
-            docs = [{"page_content": text, "metadata": {"source": file}}]
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                if not text.strip():
+                    print(f"❌ Error: El archivo '{file}' está vacío.")
+                else:
+                    docs = [Document(page_content=text, metadata={"source": file})]
+            except Exception as e:
+                print(f"❌ Error al cargar '{file}': {e}")
         else:
             continue
         if not docs:
@@ -121,7 +131,9 @@ print("✅ Modelo de embeddings cargado.")
 print("Cargando base de datos vectorial...")
 vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
 retriever = vector_store.as_retriever(
-    search_type="similarity",  # Tipo de búsqueda
+    # search_type="similarity",  # Tipo de búsqueda
+    search_type="mmr",  # Tipo de búsqueda
+    # search_type="similarity_score_threshold",  # Tipo de búsqueda
     search_kwargs=KWARGS,  # Número de fragmentos relevantes a recuperar
 )
 print("✅ Base de datos vectorial cargada y lista.")
@@ -177,7 +189,7 @@ class ChatRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
     language: Optional[str] = "es"
-    model: Optional[str] = None  # Permite especificar el modelo
+    model: Optional[str] = None
 
 
 # --- HISTORIAL DE SESIONES EN MEMORIA ---
@@ -193,8 +205,14 @@ def chat(request: ChatRequest):
     history_context = "\n".join([
         f"Usuario: {q}\nBot: {a}" for q, a in history
     ])
+    # history_context = ''
     pregunta_con_historial = f"{history_context}\nUsuario: {request.question}" if history_context else request.question
     print(f"Pregunta recibida: {request.question} (session_id={session_id}, language={language}, model={model_name})")
+
+    # Mostrar los documentos recuperados por el retriever
+    # docs_encontrados = retriever.get_relevant_documents(pregunta_con_historial)
+    # print(f"Documentos recuperados por el retriever:\n{docs_encontrados}")
+
     prompt_template = f"""
     Eres un asistente experto en un manual técnico.
 
@@ -230,6 +248,59 @@ def chat(request: ChatRequest):
     history.append((request.question, response))
     session_histories[session_id] = history
     return {"answer": response, "session_id": session_id}
+
+
+@app.post("/agent", summary="Modo agente: busca variable por contexto en model.txt y deja que el modelo razone y devuelva el nombre exacto")
+def agent_search(request: ChatRequest):
+    print(f"Petición de agente recibida: {request.question} (session_id={request.session_id}, language={request.language})")
+    filename = "model.txt"
+    file_path = os.path.join(DATA_DIR, filename)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        if not text.strip():
+            return {"error": f"El archivo '{filename}' está vacío."}
+        # Indexar el archivo como base de datos temporal
+        embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL, model_kwargs={"device": "cpu"})
+        doc = Document(page_content=text, metadata={"source": filename})
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
+        chunks = text_splitter.split_documents([doc])
+        vector_store = Chroma.from_documents(documents=chunks, embedding=embeddings)
+        retriever = vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
+        # Buscar los fragmentos más relevantes
+        docs_encontrados = retriever.invoke(request.question)
+        if not docs_encontrados:
+            return {"error": f"No se encontró información relevante en '{filename}'"}
+        contexto = "\n".join(doc.page_content for doc in docs_encontrados)
+        # Prompt para el agente
+        prompt_agente = f"""
+        Eres un agente experto en variables de control industrial.
+        Tu tarea es identificar el nombre exacto de la variable y el valor que corresponde a la petición del usuario, usando únicamente el CONTEXTO proporcionado.
+        Responde únicamente con un objeto JSON válido, sin explicaciones, sin formato markdown y sin ningún texto adicional. El JSON debe tener los campos:
+        - variable: el nombre exacto de la variable (por ejemplo: ph.basic.cd.sp)
+        - value: el valor que corresponde (true/false/número)
+        - message: una explicación breve de la acción que se va a realizar, sin mencionar la variable.
+        Si no existe la variable, responde exactamente: {{"variable": null, "value": null, "message": "No se encontró la variable solicitada."}}
+
+        CONTEXTO:
+        {contexto}
+
+        PREGUNTA:
+        {request.question}
+        """
+        llm_agente = ChatOllama(model=LLM_MODEL, temperature=0.1, base_url=OLLAMA_BASE_URL)
+        respuesta = llm_agente.invoke(prompt_agente)
+        # Extraer solo el JSON de la respuesta
+        match = re.search(r'{[\s\S]*}', respuesta.content)
+        if match:
+            try:
+                return json.loads(match.group())
+            except Exception as e:
+                return {"error": f"La IA no devolvió un JSON válido: {e}", "raw": match.group()}
+        else:
+            return {"error": "La IA no devolvió un JSON en la respuesta.", "raw": respuesta.content}
+    except Exception as e:
+        return {"error": f"No se pudo abrir el archivo '{filename}': {e}"}
 
 
 # --- EJECUCIÓN DEL SERVIDOR (para desarrollo) ---
