@@ -36,9 +36,14 @@ def extract_json_from_response(response_content):
 
 def build_chat_prompt(context, question, language="es"):
     """
-    Construye el prompt para el modo chat.
+    Construye el prompt para el modo chat, incluyendo instrucción para priorizar la última pregunta.
     """
+    instruccion = (
+        "Prioriza la última pregunta del usuario. Usa el historial solo como contexto adicional si es relevante. "
+        "Si la pregunta actual es diferente al historial, responde solo a la nueva pregunta."
+    )
     return (
+        f"{instruccion}\n"
         f"Eres un asistente experto en un manual técnico.\n\n"
         f"Responde **únicamente** a la PREGUNTA usando el CONTEXTO dado.  \n"
         f"No inventes información ni uses conocimientos externos.  \n"

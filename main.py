@@ -62,7 +62,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Variables globales para recursos compartidos
+retriever = None
+llm = None
+prompt = None
+rag_chain = None
+
 def init_db():
+    global retriever, llm, prompt, rag_chain
     # Carga el modelo de embeddings (debe ser el mismo que en ingest.py)
     print("Cargando modelo de embeddings...")
     embeddings = HuggingFaceEmbeddings(
@@ -117,14 +124,13 @@ session_histories = {}
 def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
     language = request.language or "es"
-    model_name = request.model or LLM_MODEL  # Usa el modelo por defecto si no se especifica
+    model_name = request.model or LLM_MODEL
     history = session_histories.get(session_id, [])
     history_context = "\n".join([
         f"Usuario: {q}\nBot: {a}" for q, a in history
     ])
-    pregunta_con_historial = f"{history_context}\nUsuario: {request.question}" if history_context else request.question
+    pregunta_con_historial = f"{history_context}\nUsuario: {request.question}" if history_context else f"Usuario: {request.question}"
     print(f"Pregunta recibida: {request.question} (session_id={session_id}, language={language}, model={model_name})")
-
     prompt_text = build_chat_prompt("{context}", "{question}", language)
     prompt = PromptTemplate(template=prompt_text, input_variables=["context", "question"])
     llm_local = ChatOllama(model=model_name, temperature=TEMPERATURE, base_url=OLLAMA_BASE_URL)
@@ -150,8 +156,8 @@ def agent_search(request: ChatRequest):
             return {"error": "El archivo 'model.txt' está vacío o no se pudo procesar."}
         embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL, model_kwargs={"device": "cpu"})
         vector_store = Chroma.from_documents(documents=chunks, embedding=embeddings)
-        retriever = vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
-        docs_encontrados = retriever.invoke(request.question)
+        retriever_agent = vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
+        docs_encontrados = retriever_agent.invoke(request.question)
         if not docs_encontrados:
             return {"variable": None, "value": None, "message": "No se encontró la variable solicitada."}
         contexto = "\n".join(doc.page_content for doc in docs_encontrados)
