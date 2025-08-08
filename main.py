@@ -125,12 +125,16 @@ def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
     language = request.language or "es"
     model_name = request.model or LLM_MODEL
+    use_history = getattr(request, "use_history", False)
     history = session_histories.get(session_id, [])
-    history_context = "\n".join([
-        f"Usuario: {q}\nBot: {a}" for q, a in history
-    ])
-    pregunta_con_historial = f"{history_context}\nUsuario: {request.question}" if history_context else f"Usuario: {request.question}"
-    print(f"Pregunta recibida: {request.question} (session_id={session_id}, language={language}, model={model_name})")
+    if use_history and history:
+        history_context = "\n".join([
+            f"Usuario: {q}\nBot: {a}" for q, a in history
+        ])
+        pregunta_con_historial = f"{history_context}\nUsuario: {request.question}"
+    else:
+        pregunta_con_historial = f"Usuario: {request.question}"
+    print(f"Pregunta recibida: {request.question} (session_id={session_id}, language={language}, model={model_name}, use_history={use_history})")
     prompt_text = build_chat_prompt("{context}", "{question}", language)
     prompt = PromptTemplate(template=prompt_text, input_variables=["context", "question"])
     llm_local = ChatOllama(model=model_name, temperature=TEMPERATURE, base_url=OLLAMA_BASE_URL)
@@ -161,7 +165,8 @@ def agent_search(request: ChatRequest):
         if not docs_encontrados:
             return {"variable": None, "value": None, "message": "No se encontró la variable solicitada."}
         contexto = "\n".join(doc.page_content for doc in docs_encontrados)
-        prompt_agente = build_agent_prompt(contexto, request.question)
+        language = request.language or "es"
+        prompt_agente = build_agent_prompt(contexto, request.question, language)
         llm_agente = ChatOllama(model=LLM_MODEL, temperature=0.1, base_url=OLLAMA_BASE_URL)
         respuesta = llm_agente.invoke(prompt_agente)
         return extract_json_from_response(respuesta.content)
