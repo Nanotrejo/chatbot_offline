@@ -1,7 +1,8 @@
 # main.py
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama  # Importación actualizada
@@ -10,14 +11,13 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 import os
 import shutil
-from langchain_community.document_loaders import PyPDFLoader
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_huggingface import HuggingFaceEmbeddings
 from typing import Optional
 import uuid
 from db_utils import load_and_split_file, load_all_documents
-from llm_utils import build_agent_prompt, extract_json_from_response, build_chat_prompt, build_manual_prompt
-from config import EMBEDDING_MODEL, LLM_MODEL, DATA_DIR, KWARGS, TEMPERATURE, OLLAMA_BASE_URL, DB_PATH
+from llm_utils import build_agent_prompt, extract_json_from_response, build_chat_prompt, build_manual_prompt, build_gpt_helper_prompt
+from config import EMBEDDING_MODEL, LLM_MODEL, DATA_DIR, KWARGS, TEMPERATURE, OLLAMA_BASE_URL, DB_PATH, RETRIEVER_K, RETRIEVER_FETCH_K, TOP_K_RERANK
 
 # --- INGESTA AUTOMÁTICA ---
 def ensure_vector_db():
@@ -81,10 +81,8 @@ def init_db():
     print("Cargando base de datos vectorial...")
     vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
     retriever = vector_store.as_retriever(
-        # search_type="similarity",  # Tipo de búsqueda
-        search_type="mmr",  # Tipo de búsqueda
-        # search_type="similarity_score_threshold",  # Tipo de búsqueda
-        search_kwargs=KWARGS,  # Número de fragmentos relevantes a recuperar
+        search_type="mmr",
+        search_kwargs={"k": RETRIEVER_K, "fetch_k": RETRIEVER_FETCH_K},
     )
     print("✅ Base de datos vectorial cargada y lista.")
 
@@ -92,7 +90,7 @@ def init_db():
     llm = ChatOllama(model=LLM_MODEL, temperature=TEMPERATURE, base_url=OLLAMA_BASE_URL)
 
     # Definición del Prompt (Plantilla de instrucciones para el LLM)
-    prompt_template = build_manual_prompt("{context}", "{question}")
+    prompt_template = build_manual_prompt(context="{context}", question="{question}")
     prompt = PromptTemplate(
         template=prompt_template, input_variables=["context", "question"]
     )
@@ -135,7 +133,7 @@ def chat(request: ChatRequest):
     else:
         pregunta_con_historial = f"Usuario: {request.question}"
     print(f"Pregunta recibida: {request.question} (session_id={session_id}, language={language}, model={model_name}, use_history={use_history})")
-    prompt_text = build_chat_prompt("{context}", "{question}", language)
+    prompt_text = build_chat_prompt(context="{context}", question="{question}", language=language)
     prompt = PromptTemplate(template=prompt_text, input_variables=["context", "question"])
     llm_local = ChatOllama(model=model_name, temperature=TEMPERATURE, base_url=OLLAMA_BASE_URL)
     rag_chain_local = (
@@ -151,6 +149,51 @@ def chat(request: ChatRequest):
     return {"answer": response, "session_id": session_id}
 
 
+@app.post("/chat_stream", summary="Endpoint de chatbot en streaming")
+async def chat_stream(request: Request):
+    body = await request.json()
+    session_id = body.get("session_id") or str(uuid.uuid4())
+    language = body.get("language") or "es"
+    model_name = body.get("model") or LLM_MODEL
+    use_history = body.get("use_history", True)
+    question = body.get("question")
+    history = session_histories.get(session_id, [])
+    pregunta_con_historial = f"Usuario: {question}"
+    if use_history and history:
+        history_context = "\n".join([
+            f"Usuario: {q}\nBot: {a}" for q, a in history
+        ])
+        pregunta_con_historial = f"{history_context}\nUsuario: {question}"
+    print(f"Pregunta recibida: {question} (session_id={session_id}, language={language}, model={model_name}, use_history={use_history})")
+    # prompt_text = build_chat_prompt("{context}", "{question}", language)
+    prompt_text = build_gpt_helper_prompt(context="{context}", question="{question}", language=language)
+    prompt = PromptTemplate(template=prompt_text, input_variables=["context", "question"])
+    llm_local = ChatOllama(model=model_name, temperature=TEMPERATURE, base_url=OLLAMA_BASE_URL)
+    rag_chain_local = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm_local
+        | StrOutputParser()
+    )
+    def stream_response():
+        # Recupera los fragmentos relevantes de ChromaDB antes de generar la respuesta
+        docs_relevantes = retriever.invoke(pregunta_con_historial)
+        for doc in docs_relevantes:
+            # print(f"- {getattr(doc, 'page_content', str(doc))[:120]}...")
+            # crea un fichero md y añade el resultado
+            with open("fragmentos.md", "a") as f:
+                f.write(f"### Fragmento encontrado\n\n{getattr(doc, 'page_content', str(doc))}\n\n")
+        # Genera la respuesta en streaming
+        respuesta = ""
+        for chunk in rag_chain_local.stream(pregunta_con_historial):
+            text = getattr(chunk, "content", str(chunk))
+            yield text
+            respuesta += text
+        history.append((question, respuesta))
+        session_histories[session_id] = history
+    return StreamingResponse(stream_response(), media_type="text/plain")
+
+
 @app.post("/agent", summary="Modo agente: busca variable por contexto en model.txt y deja que el modelo razone y devuelva el nombre exacto y el valor")
 def agent_search(request: ChatRequest):
     print(f"Petición de agente recibida: {request.question} (session_id={request.session_id}, language={request.language})")
@@ -164,9 +207,9 @@ def agent_search(request: ChatRequest):
         docs_encontrados = retriever_agent.invoke(request.question)
         if not docs_encontrados:
             return {"variable": None, "value": None, "message": "No se encontró la variable solicitada."}
-        contexto = "\n".join(doc.page_content for doc in docs_encontrados)
+        context = "\n".join(doc.page_content for doc in docs_encontrados)
         language = request.language or "es"
-        prompt_agente = build_agent_prompt(contexto, request.question, language)
+        prompt_agente = build_agent_prompt(context=context, question=request.question, language=language)
         llm_agente = ChatOllama(model=LLM_MODEL, temperature=0.1, base_url=OLLAMA_BASE_URL)
         respuesta = llm_agente.invoke(prompt_agente)
         return extract_json_from_response(respuesta.content)
@@ -181,4 +224,5 @@ if __name__ == "__main__":
     if respuesta == "s":
         ensure_vector_db()
     init_db()
+    print("Inciado en http://localhost:8000/docs")
     uvicorn.run(app, host="0.0.0.0", port=8000)

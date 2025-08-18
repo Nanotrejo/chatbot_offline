@@ -4,7 +4,7 @@ import re
 import json
 
 
-def build_agent_prompt(contexto, pregunta, language="es"):
+def build_agent_prompt(context, question, language="es"):
     """
     Construye el prompt para el modo agente, asegurando que el campo message responda en el idioma indicado.
     """
@@ -18,7 +18,7 @@ def build_agent_prompt(contexto, pregunta, language="es"):
         "value: el valor que corresponde (true/false/número), "
         f"message: una explicación breve de la acción que se va a realizar, sin mencionar la variable, en el idioma solicitado: {language}. "
         "Si no existe la variable, responde exactamente: {{\"variable\": null, \"value\": null, \"message\": \"No se encontró la variable solicitada.\"}}.\n\n"
-        f"CONTEXTO:\n{contexto}\n\nPREGUNTA:\n{pregunta}\n"
+        f"CONTEXTO:\n{context}\n\nPREGUNTA:\n{question}\n"
     )
 
 
@@ -40,12 +40,12 @@ def build_chat_prompt(context, question, language="es"):
     """
     Construye el prompt para el modo chat, incluyendo instrucción para priorizar la última pregunta.
     """
-    instruccion = (
+    instruction = (
         "Prioriza la última pregunta del usuario. Usa el historial solo como contexto adicional si es relevante. "
         "Si la pregunta actual es diferente al historial, responde solo a la nueva pregunta."
     )
     return (
-        f"{instruccion}\n"
+        f"{instruction}\n"
         f"Eres un asistente experto en un manual técnico.\n\n"
         f"Responde **únicamente** a la PREGUNTA usando el CONTEXTO dado.  \n"
         f"No inventes información ni uses conocimientos externos.  \n"
@@ -80,3 +80,28 @@ def build_manual_prompt(context, question):
         f"PREGUNTA:\n{question}\n\n"
         "RESPUESTA CONCISA:"
     )
+
+
+def build_gpt_helper_prompt(context, question, language="es"):
+    """
+    Prompt estilo ChatGPT para asistente de tareas diarias, llamado Biro, experto en manuales de Bionet.
+    """
+    instruction = (
+        "Eres Biro, un asistente inteligente y amigable, similar a ChatGPT, que ayuda al usuario con tareas diarias, dudas generales, organización, redacción, consejos y soporte técnico básico. "
+        "Eres experto en manuales de Bionet. "
+        "Responde de forma clara, útil y empática. Si la pregunta requiere pasos, enuméralos. Si el usuario pide ayuda con organización, sugiere métodos y herramientas. Si la pregunta es técnica, explica de forma sencilla. "
+        "Solo saluda cuando el usuario lo haga primero."
+        f"Responde siempre en el idioma solicitado: {language}. Si no sabes la respuesta, sugiere cómo buscarla o pide más detalles."
+    )
+    return (
+        f"{instruction}\n"
+        f"CONTEXTO (si aplica):\n{context}\n\n"
+        f"PREGUNTA DEL USUARIO:\n{question}\n\n"
+        f"RESPUESTA EN {language}:"
+    )
+    # return (
+    #     "INSTRUCCIONES: Usa ÚNICAMENTE el CONTEXTO provisto para responder. "
+    #     "Si la información no está en el contexto, responde exactamente: \"No está en la documentación\".\n\n"
+    #     "Formato de contexto:\n{context}\n\n"
+    #     "Pregunta (responde en el idioma pedido): {question}\n"
+    # )

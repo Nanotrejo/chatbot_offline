@@ -1,14 +1,14 @@
 # db_utils.py
 
+
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 import os
+from config import CHUNK_SIZE, CHUNK_OVERLAP, DATA_DIR
 
-DATA_DIR = "documents/"
 
-
-def load_and_split_file(filename, chunk_size=1200, chunk_overlap=200):
+def load_and_split_file(filename, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP):
     """
     Carga un archivo TXT y lo divide en fragmentos tipo Document.
     """
@@ -26,7 +26,7 @@ def load_and_split_file(filename, chunk_size=1200, chunk_overlap=200):
         return []
 
 
-def load_all_documents(data_dir=DATA_DIR, chunk_size=1000, chunk_overlap=200):
+def load_all_documents(data_dir=DATA_DIR, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP):
     """
     Carga y divide todos los archivos PDF y TXT en el directorio indicado.
     Devuelve una lista de fragmentos (Document).
