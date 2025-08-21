@@ -19,3 +19,6 @@ LLM_MODEL = "llama3"
 KWARGS = {"k": 12}
 TEMPERATURE = 0.1
 OLLAMA_BASE_URL = "http://localhost:11434"
+# Enable or disable LLM-based reranking (may increase latency)
+ENABLE_RERANK = False
+ENABLE_HISTORY = False

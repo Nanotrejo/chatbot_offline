@@ -15,9 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_huggingface import HuggingFaceEmbeddings
 from typing import Optional
 import uuid
+import re
 from db_utils import load_and_split_file, load_all_documents
 from llm_utils import build_agent_prompt, extract_json_from_response, build_chat_prompt, build_manual_prompt, build_gpt_helper_prompt
-from config import EMBEDDING_MODEL, LLM_MODEL, DATA_DIR, KWARGS, TEMPERATURE, OLLAMA_BASE_URL, DB_PATH, RETRIEVER_K, RETRIEVER_FETCH_K, TOP_K_RERANK
+from config import EMBEDDING_MODEL, LLM_MODEL, DATA_DIR, KWARGS, TEMPERATURE, OLLAMA_BASE_URL, DB_PATH, RETRIEVER_K, RETRIEVER_FETCH_K, TOP_K_RERANK, ENABLE_RERANK, ENABLE_HISTORY
 
 # --- INGESTA AUTOMÁTICA ---
 def ensure_vector_db():
@@ -109,9 +110,10 @@ def format_docs(docs):
 
 class ChatRequest(BaseModel):
     question: str
-    session_id: Optional[str] = None
+    session_id: Optional[str] = "1"
     language: Optional[str] = "es"
-    model: Optional[str] = None
+    model: Optional[str] = "llama3"
+    use_history: Optional[bool] = ENABLE_HISTORY
 
 
 # --- HISTORIAL DE SESIONES EN MEMORIA ---
@@ -123,7 +125,7 @@ def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
     language = request.language or "es"
     model_name = request.model or LLM_MODEL
-    use_history = getattr(request, "use_history", False)
+    use_history = getattr(request, "use_history", ENABLE_HISTORY)
     history = session_histories.get(session_id, [])
     if use_history and history:
         history_context = "\n".join([
@@ -142,7 +144,19 @@ def chat(request: ChatRequest):
         | llm_local
         | StrOutputParser()
     )
-    response = rag_chain_local.invoke(pregunta_con_historial)
+    # Recuperar documentos y opcionalmente rerankear antes de invocar la cadena RAG
+    docs_relevantes = retriever.invoke(pregunta_con_historial)
+    for doc in docs_relevantes:
+        # crea un fichero md y añade el resultado
+        with open("fragmentos.md", "w", encoding="utf-8") as f:
+            for doc in docs_relevantes:
+                f.write(f"### Fragmento encontrado\n\n{getattr(doc, 'page_content', str(doc))}\n\n")
+    if ENABLE_RERANK:
+        top_docs = rerank_with_llm(llm_local, docs_relevantes, request.question, top_k=TOP_K_RERANK)
+    else:
+        top_docs = docs_relevantes[:RETRIEVER_K]
+    contexto = format_docs(top_docs)
+    response = rag_chain_local.invoke(contexto + "\n\n" + pregunta_con_historial)
     print(f"Respuesta generada: {response}")
     history.append((request.question, response))
     session_histories[session_id] = history
@@ -155,7 +169,7 @@ async def chat_stream(request: Request):
     session_id = body.get("session_id") or str(uuid.uuid4())
     language = body.get("language") or "es"
     model_name = body.get("model") or LLM_MODEL
-    use_history = body.get("use_history", True)
+    use_history = body.get("use_history", ENABLE_HISTORY)
     question = body.get("question")
     history = session_histories.get(session_id, [])
     pregunta_con_historial = f"Usuario: {question}"
@@ -179,13 +193,19 @@ async def chat_stream(request: Request):
         # Recupera los fragmentos relevantes de ChromaDB antes de generar la respuesta
         docs_relevantes = retriever.invoke(pregunta_con_historial)
         for doc in docs_relevantes:
-            # print(f"- {getattr(doc, 'page_content', str(doc))[:120]}...")
             # crea un fichero md y añade el resultado
-            with open("fragmentos.md", "a") as f:
-                f.write(f"### Fragmento encontrado\n\n{getattr(doc, 'page_content', str(doc))}\n\n")
+            with open("fragmentos.md", "w", encoding="utf-8") as f:
+                for doc in docs_relevantes:
+                    f.write(f"### Fragmento encontrado\n\n{getattr(doc, 'page_content', str(doc))}\n\n")
+        # Rerankeo opcional de los fragmentos
+        if ENABLE_RERANK:
+            top_docs = rerank_with_llm(llm_local, docs_relevantes, question, top_k=TOP_K_RERANK)
+        else:
+            top_docs = docs_relevantes[:RETRIEVER_K]
+        contexto = format_docs(top_docs)
         # Genera la respuesta en streaming
         respuesta = ""
-        for chunk in rag_chain_local.stream(pregunta_con_historial):
+        for chunk in rag_chain_local.stream(contexto + "\n\n" + pregunta_con_historial):
             text = getattr(chunk, "content", str(chunk))
             yield text
             respuesta += text
@@ -216,12 +236,31 @@ def agent_search(request: ChatRequest):
     except Exception as e:
         return {"error": f"No se pudo procesar la petición: {e}"}
 
+def rerank_with_llm(llm, docs, question, top_k=TOP_K_RERANK):
+    scores = []
+    for doc in docs:
+        prompt = f"Evalúa si este fragmento ayuda a responder la pregunta. Responde un número 0-100.\n\nPregunta: {question}\n\nFragmento:\n{doc.page_content}\n"
+        resp = llm.invoke(prompt)
+        # Handle different return types from LLM (string or object with .content)
+        if isinstance(resp, str):
+            resp_text = resp
+        else:
+            resp_text = getattr(resp, "content", str(resp))
+        try:
+            match = re.search(r"(\d+)(?:\.\d+)?", resp_text)
+            score = float(match.group(1)) if match else 0.0
+        except Exception:
+            score = 0.0
+        scores.append((score, doc))
+    scores.sort(key=lambda x: x[0], reverse=True)
+    return [d for s,d in scores[:top_k]]
+
 
 # --- EJECUCIÓN DEL SERVIDOR (para desarrollo) ---
 if __name__ == "__main__":
     # Pregunta interactiva para ejecutar la ingesta automática
     respuesta = input("¿Deseas ejecutar la ingesta automática de documentos? (s/n): ").strip().lower()
-    if respuesta == "s":
+    if respuesta in ["s", "y"]:
         ensure_vector_db()
     init_db()
     print("Inciado en http://localhost:8000/docs")
