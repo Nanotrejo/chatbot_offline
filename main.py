@@ -169,7 +169,7 @@ async def chat_stream(request: Request):
     session_id = body.get("session_id") or str(uuid.uuid4())
     language = body.get("language") or "es"
     model_name = body.get("model") or LLM_MODEL
-    use_history = body.get("use_history", ENABLE_HISTORY)
+    use_history = body.get("use_history", ENABLE_HISTORY) or ENABLE_HISTORY
     question = body.get("question")
     history = session_histories.get(session_id, [])
     pregunta_con_historial = f"Usuario: {question}"
@@ -263,5 +263,19 @@ if __name__ == "__main__":
     if respuesta in ["s", "y"]:
         ensure_vector_db()
     init_db()
-    print("Inciado en http://localhost:8000/docs")
+
+    import socket
+    try:
+        # Método robusto para obtener la IP local conectando a un destino público sin enviar paquetes
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "127.0.0.1"
+
+    print(f"\nIniciado: http://localhost:8000/docs")
+    if local_ip and local_ip != "127.0.0.1":
+        print(f"Accesible en la red local: http://{local_ip}:8000/docs \n")
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
